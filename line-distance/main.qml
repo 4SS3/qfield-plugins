@@ -266,6 +266,7 @@ Item {
         property string label
         property string value
         property string hint
+        property int valueSize: 30
         Layout.fillWidth: true
         Layout.preferredWidth: 1
         spacing: 0
@@ -278,7 +279,7 @@ Item {
         Label {
             text: parent.value
             color: "#111111"
-            font.pixelSize: 30
+            font.pixelSize: parent.valueSize
             font.bold: true
             Layout.alignment: Qt.AlignHCenter
         }
@@ -346,12 +347,6 @@ Item {
 
                 Tile {
                     readonly property var r: plugin.result
-                    label: qsTr("Till B, m")
-                    value: r ? Geo.fmt(r.toEnd) : "–"
-                    hint: r && r.afterEnd ? qsTr("bortom B") : qsTr("från A: ") + (r ? Geo.fmt(r.fromStart, 2) : "–")
-                }
-                Tile {
-                    readonly property var r: plugin.result
                     label: r && r.kind === "polygon" ? qsTr("Till kant, m") : qsTr("Offset, m")
                     value: r ? Geo.fmt(Math.abs(r.offset)) : "–"
                     hint: {
@@ -369,10 +364,35 @@ Item {
                     label: qsTr("Höjd, m")
                     value: r && isFinite(r.dz) ? (r.dz > 0 ? "+" : "") + Geo.fmt(r.dz) : "–"
                     hint: {
-                        if (!r || !isFinite(r.dz))
-                            return r && !isFinite(r.z) ? qsTr("linjen saknar Z") : qsTr("ingen höjd")
-                        return r.dz > 0.0005 ? qsTr("över") : (r.dz < -0.0005 ? qsTr("under") : qsTr("i nivå"))
+                        if (!r)
+                            return ""
+                        if (!isFinite(r.z))
+                            return qsTr("linjen saknar Z")
+                        if (!isFinite(r.dz))
+                            return qsTr("ingen GNSS-höjd")
+                        return r.dz > 0.0005 ? qsTr("över linjen") : (r.dz < -0.0005 ? qsTr("under linjen") : qsTr("i nivå"))
                     }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                visible: plugin.result !== null
+                spacing: 4
+
+                Tile {
+                    readonly property var r: plugin.result
+                    label: qsTr("Från A, m")
+                    value: r ? Geo.fmt(r.fromStart) : "–"
+                    hint: r && r.beforeStart ? qsTr("före A") : ""
+                    valueSize: 24
+                }
+                Tile {
+                    readonly property var r: plugin.result
+                    label: qsTr("Till B, m")
+                    value: r ? Geo.fmt(r.toEnd) : "–"
+                    hint: r && r.afterEnd ? qsTr("bortom B") : ""
+                    valueSize: 24
                 }
             }
 
@@ -400,9 +420,20 @@ Item {
                 Layout.fillWidth: true
                 visible: plugin.result !== null
                 horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
                 color: "#555555"
                 font.pixelSize: 13
-                text: plugin.result ? qsTr("Längd ") + Geo.fmt(plugin.result.length, 2) + " m   •   " + qsTr("kurs ") + Geo.fmt(plugin.result.bearing, 1) + "°" : ""
+                text: {
+                    const r = plugin.result
+                    if (!r)
+                        return ""
+                    let lines = [qsTr("Segment ") + (r.segIndex + 1) + ": " + Geo.fmt(r.segFromStart, 2) + qsTr(" m från start, ") + Geo.fmt(r.segToEnd, 2) + qsTr(" m till slut")]
+                    lines.push(qsTr("Längd ") + Geo.fmt(r.length, 2) + " m   •   " + qsTr("kurs ") + Geo.fmt(r.bearing, 1) + "°")
+                    const gz = plugin.position ? plugin.position.z : NaN
+                    if (isFinite(gz) || isFinite(r.z))
+                        lines.push(qsTr("Höjd: GNSS ") + Geo.fmt(gz, 3) + qsTr(" m, linje ") + Geo.fmt(r.z, 3) + " m")
+                    return lines.join("\n")
+                }
             }
         }
     }

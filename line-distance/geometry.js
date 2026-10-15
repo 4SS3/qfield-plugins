@@ -153,6 +153,9 @@ function analyze(geom, p, opts) {
                 best = {
                     pathIndex: pi, segIndex: s, t: t, dist: dist,
                     offset: dist === 0 ? 0 : (cross > 0 ? -dist : dist),
+                    segLength: segLen,
+                    segFromStart: t * segLen,
+                    segToEnd: (1 - t) * segLen,
                     fromStart: cum[s] + t * segLen,
                     length: total,
                     toEnd: total - (cum[s] + t * segLen),

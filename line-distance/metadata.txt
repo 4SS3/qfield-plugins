@@ -3,4 +3,4 @@ name=Linjeavstånd
 description=Visar vinkelrätt avstånd (offset), avstånd längs linjen till start/slut och höjdskillnad till vald linje eller polygon – som linjeutsättning i Emlid Flow/SurPad.
 author=Joakim
 icon=icon.svg
-version=0.1.0
+version=0.2.0

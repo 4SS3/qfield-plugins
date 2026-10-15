@@ -5,9 +5,10 @@ linjeutsättning i Emlid Flow och SurPad:
 
 | Ruta | Betydelse |
 |---|---|
-| **Till B** | avstånd längs linjen från närmaste punkt till slutet (B); "från A" visas under |
+| **Från A / Till B** | avstånd längs linjen från start (A) till närmaste punkt, och därifrån till slutet (B) |
+| **Segment** | avstånd från närmaste punkt till start/slut på det närmaste segmentet, samt segmentnummer |
 | **Offset** | vinkelrätt avstånd till linjen, med sida (höger/vänster om A→B) |
-| **Höjd** | skillnad mellan GNSS-höjd och linjens (interpolerade) Z – över/under; kräver Z-linje |
+| **Höjd** | GNSS-höjd minus linjens (interpolerade) Z – över/under; kräver Z-linje. Båda höjderna visas som siffror under |
 | Polygon | avstånd till närmaste kant + innanför/utanför |
 
 En streckad röd linje ritas i kartan från din position till närmaste punkt på linjen.

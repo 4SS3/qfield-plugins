@@ -18,6 +18,11 @@ near(r.offset, -2, 'offset vänster')
 r = G.analyze(g, { x: 4, y: -2, z: NaN }, { reverse: true })
 near(r.offset, -2, 'reverse offset'); near(r.fromStart, 6, 'reverse från A'); near(r.toEnd, 4, 'reverse till B')
 
+// Segmentmått: andra segmentet i en knäckt linje, 3 m in på segmentet
+const gSeg = G.parseWkt('LineString (0 0, 10 0, 10 10)')
+r = G.analyze(gSeg, { x: 11, y: 3, z: NaN })
+assert.strictEqual(r.segIndex, 1); near(r.segLength, 10, 'segmentlängd'); near(r.segFromStart, 3, 'segment från start'); near(r.segToEnd, 7, 'segment till slut')
+
 // Bortom slutet: klampas till ändpunkten, flagga afterEnd
 r = G.analyze(g, { x: 13, y: 4, z: NaN })
 near(r.dist, 5, 'dist till ändpunkt'); assert.ok(r.afterEnd); assert.ok(!r.beforeStart); near(r.toEnd, 0, 'toEnd=0')

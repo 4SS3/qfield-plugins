@@ -60,6 +60,57 @@ g = G.parseWkt('LineString (18 59, 18.01 59)')
 r = G.analyze(g, { x: 18.005, y: 59.001, z: NaN }, { geographic: true })
 assert.ok(Math.abs(r.dist - 110.574) < 0.01, 'grader -> meter: ' + r.dist)
 
+
+// ---- Kurvor -------------------------------------------------------------
+const lenOf = (path) => { let L = 0; for (let i = 1; i < path.coords.length; i++) L += Math.hypot(path.coords[i].x - path.coords[i-1].x, path.coords[i].y - path.coords[i-1].y); return L }
+
+// Halvcirkel r=10 genom (10,0)->(0,10)->(-10,0): båglängd 10π, alla punkter på cirkeln
+g = G.parseWkt('CircularString (10 0, 0 10, -10 0)', { tolerance: 0.001 })
+assert.strictEqual(g.kind, 'line')
+assert.ok(Math.abs(lenOf(g.paths[0]) - 10 * Math.PI) < 0.01, 'båglängd ' + lenOf(g.paths[0]))
+for (const c of g.paths[0].coords) assert.ok(Math.abs(Math.hypot(c.x, c.y) - 10) < 1e-9, 'punkt på cirkel')
+near(g.paths[0].coords[0].x, 10, 'start'); near(g.paths[0].coords.at(-1).x, -10, 'slut')
+assert.ok(g.paths[0].coords.some(c => Math.abs(c.x) < 0.2 && c.y > 9.9), 'går via mittpunkten (uppåt)')
+// samma båge medurs via nedre halvan
+g = G.parseWkt('CircularString (10 0, 0 -10, -10 0)', { tolerance: 0.001 })
+assert.ok(g.paths[0].coords.every(c => c.y <= 1e-9), 'nedre halvan')
+// avståndet till bågen: punkt 2 m utanför cirkeln
+r = G.analyze(G.parseWkt('CircularString (10 0, 0 10, -10 0)', { tolerance: 0.001 }), { x: 0, y: 12, z: NaN })
+assert.ok(Math.abs(r.dist - 2) < 1e-3, 'dist till båge ' + r.dist)
+// Z interpoleras längs bågen
+g = G.parseWkt('CircularString Z (10 0 0, 0 10 5, -10 0 10)', { tolerance: 0.01 })
+const mid = g.paths[0].coords.reduce((b, c) => Math.abs(c.x) < Math.abs(b.x) ? c : b)
+assert.ok(Math.abs(mid.z - 5) < 0.2, 'Z i mitten ' + mid.z)
+// tolerans styr antalet punkter
+assert.ok(G.parseWkt('CircularString (10 0, 0 10, -10 0)', { tolerance: 0.001 }).paths[0].coords.length >
+          G.parseWkt('CircularString (10 0, 0 10, -10 0)', { tolerance: 0.1 }).paths[0].coords.length)
+// Kollinjära punkter => rak linje
+g = G.parseWkt('CircularString (0 0, 5 0, 10 0)')
+assert.strictEqual(g.paths[0].coords.length, 3)
+// CompoundCurve: rak + båge + rak, led sammanfogas utan dubblett
+g = G.parseWkt('CompoundCurve ((0 0, 10 0), CircularString (10 0, 20 10, 30 0), (30 0, 40 0))', { tolerance: 0.01 })
+assert.strictEqual(g.paths.length, 1)
+const cc = g.paths[0].coords
+near(cc[0].x, 0, 'cc start'); near(cc.at(-1).x, 40, 'cc slut')
+for (let i = 1; i < cc.length; i++) assert.ok(Math.hypot(cc[i].x - cc[i-1].x, cc[i].y - cc[i-1].y) > 1e-9, 'ingen dubblettpunkt')
+assert.ok(Math.abs(lenOf(g.paths[0]) - (10 + Math.PI * 10 + 10)) < 0.05, 'cc längd')
+// MultiCurve
+g = G.parseWkt('MultiCurve ((0 0, 1 0), CircularString (0 5, 5 10, 10 5))')
+assert.strictEqual(g.paths.length, 2)
+// Hel cirkel som CurvePolygon: innanför/utanför
+g = G.parseWkt('CurvePolygon (CircularString (10 0, -10 0, 10 0))', { tolerance: 0.001 })
+assert.strictEqual(g.kind, 'polygon')
+r = G.analyze(g, { x: 0, y: 0, z: NaN }); assert.ok(r.inside); assert.ok(Math.abs(r.dist - 10) < 1e-3, 'mitt i cirkeln: ' + r.dist)
+r = G.analyze(g, { x: 13, y: 0, z: NaN }); assert.ok(!r.inside); assert.ok(Math.abs(r.dist - 3) < 1e-3)
+// CurvePolygon med CompoundCurve-ring: halvcirkel + rak stäng
+g = G.parseWkt('CurvePolygon (CompoundCurve (CircularString (10 0, 0 10, -10 0), (-10 0, 10 0)))', { tolerance: 0.001 })
+r = G.analyze(g, { x: 0, y: 5, z: NaN }); assert.ok(r.inside, 'inne i halvcirkelpolygon')
+r = G.analyze(g, { x: 0, y: -1, z: NaN }); assert.ok(!r.inside)
+// MultiSurface med blandade delar
+g = G.parseWkt('MultiSurface (Polygon ((0 0, 4 0, 4 4, 0 4, 0 0)), CurvePolygon (CircularString (20 0, 10 0, 20 0)))', { tolerance: 0.01 })
+r = G.analyze(g, { x: 15, y: 0, z: NaN }); assert.ok(r.inside)
+r = G.analyze(g, { x: 2, y: 2, z: NaN }); assert.ok(r.inside)
+
 // Ogiltigt / ej stödda
 assert.strictEqual(G.parseWkt('Point (1 2)'), null)
 assert.strictEqual(G.parseWkt('LineString EMPTY'), null)

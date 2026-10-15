@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtCore
 
 import org.qfield
 import org.qgis
@@ -36,6 +37,85 @@ Item {
     property var position: null        // {x, y, z} i projektets CRS
     property string status: ""
 
+    // ------------------------------------------------------------ inställningar
+
+    Settings {
+        id: settings
+        category: "LineDistancePlugin"
+        property real heightOffset: 0.0   // läggs till GNSS-höjden (t.ex. ellipsoid -> RH2000)
+        property bool cutFill: false      // visa höjd som Cut/Fill i stället för över/under
+    }
+
+    Dialog {
+        id: settingsDialog
+        parent: mainWindow.contentItem
+        anchors.centerIn: parent
+        modal: true
+        title: qsTr("Inställningar")
+        standardButtons: Dialog.Ok | Dialog.Cancel
+
+        ColumnLayout {
+            width: 300
+            spacing: 12
+
+            Label {
+                text: qsTr("Höjdoffset (m), läggs till GNSS-höjden")
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            TextField {
+                id: offsetField
+                Layout.fillWidth: true
+                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                placeholderText: "0,000"
+            }
+            Label {
+                id: antennaLabel
+                wrapMode: Text.WordWrap
+                color: "#555555"
+                font.pixelSize: 13
+                Layout.fillWidth: true
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label {
+                    text: qsTr("Visa som Cut/Fill")
+                    Layout.fillWidth: true
+                }
+                Switch {
+                    id: cutFillSwitch
+                }
+            }
+        }
+
+        onAboutToShow: {
+            antennaLabel.text = plugin.antennaInfo()
+            offsetField.text = Geo.fmt(settings.heightOffset, 3)
+            cutFillSwitch.checked = settings.cutFill
+        }
+        onAccepted: {
+            const v = parseFloat(offsetField.text.replace(",", "."))
+            settings.heightOffset = isNaN(v) ? 0.0 : v
+            settings.cutFill = cutFillSwitch.checked
+            plugin.update()
+        }
+    }
+
+    // Antennhöjden ställs in i QFields egna positioneringsinställningar och dras
+    // redan av från elevation – pluginet gör ingen egen avdragning.
+    function antennaHeightApplied() {
+        const positioning = getPositioning()
+        const h = positioning ? positioning.antennaHeight : undefined
+        return (typeof h === 'number' && isFinite(h)) ? h : 0.0
+    }
+
+    function antennaInfo() {
+        const h = antennaHeightApplied()
+        return h !== 0
+            ? qsTr("Antennhöjd ") + Geo.fmt(h, 3) + qsTr(" m dras redan av av QField (positioneringsinställningar).")
+            : qsTr("Ingen antennhöjd avdragen. Ställ in den i QFields positioneringsinställningar om GNSS-höjden gäller antennen.")
+    }
+
     // ------------------------------------------------------------ position
 
     function getPositioning() {
@@ -55,8 +135,13 @@ Item {
         return {
             "x": pt.x,
             "y": pt.y,
-            "z": info.elevationValid ? info.elevation : NaN
+            "z": info.elevationValid ? info.elevation + settings.heightOffset : NaN
         }
+    }
+
+    // 1 cm största avvikelse mellan båge och rak sekant, i projektets enhet
+    function arcTolerance() {
+        return qgisProject.crs.isGeographic === true ? 0.01 / 111320 : 0.01
     }
 
     function analysisOptions() {
@@ -101,6 +186,21 @@ Item {
         return layer.name + " #" + feature.id
     }
 
+    // Lagren som ritas i kartan just nu (alltså synliga i lagerträdet)
+    function visibleLayers() {
+        const rendered = mapCanvas.mapSettings.layers
+        const out = []
+        if (rendered !== undefined && rendered !== null) {
+            for (let i = 0; i < rendered.length; i++)
+                out.push(rendered[i])
+            return out
+        }
+        const all = projectUtils.mapLayers(qgisProject)
+        for (const id in all)
+            out.push(all[id])
+        return out
+    }
+
     function pickAt(screenPoint) {
         const ms = mapCanvas.mapSettings
         const tol = plugin.pickTolerancePx
@@ -118,17 +218,15 @@ Item {
             "geographic": qgisProject.crs.isGeographic === true
         }
 
-        const layers = projectUtils.mapLayers(qgisProject)
         let best = null
-        for (const id in layers) {
-            const layer = layers[id]
+        for (const layer of visibleLayers()) {
             try {
                 const layerRect = geoUtils.reprojectRectangle(rect, qgisProject.crs, layer.crs)
                 const it = layerUtils.createFeatureIteratorFromRectangle(layer, layerRect)
                 while (it.hasNext()) {
                     const feature = it.next()
                     const projected = geoUtils.reprojectGeometry(feature.geometry, layer.crs, qgisProject.crs)
-                    const parsed = Geo.parseWkt(projected.asWkt(9))
+                    const parsed = Geo.parseWkt(projected.asWkt(9), { "tolerance": arcTolerance() })
                     if (!parsed)
                         continue
                     const a = Geo.analyze(parsed, probe, opts)
@@ -335,6 +433,10 @@ Item {
                     Layout.fillWidth: true
                 }
                 Button {
+                    text: "⚙"
+                    onClicked: settingsDialog.open()
+                }
+                Button {
                     text: "✕"
                     onClicked: plugin.closePanel()
                 }
@@ -361,16 +463,27 @@ Item {
                 }
                 Tile {
                     readonly property var r: plugin.result
-                    label: qsTr("Höjd, m")
-                    value: r && isFinite(r.dz) ? (r.dz > 0 ? "+" : "") + Geo.fmt(r.dz) : "–"
+                    readonly property bool known: r !== null && isFinite(r.dz)
+                    readonly property bool cut: known && r.dz > 0.0005
+                    readonly property bool fill: known && r.dz < -0.0005
+                    label: settings.cutFill ? (cut ? qsTr("Cut, m") : (fill ? qsTr("Fill, m") : qsTr("Cut/Fill, m"))) : qsTr("Höjd, m")
+                    value: {
+                        if (!known)
+                            return "–"
+                        if (settings.cutFill)
+                            return Geo.fmt(Math.abs(r.dz))
+                        return (r.dz > 0 ? "+" : "") + Geo.fmt(r.dz)
+                    }
                     hint: {
                         if (!r)
                             return ""
                         if (!isFinite(r.z))
                             return qsTr("linjen saknar Z")
-                        if (!isFinite(r.dz))
+                        if (!known)
                             return qsTr("ingen GNSS-höjd")
-                        return r.dz > 0.0005 ? qsTr("över linjen") : (r.dz < -0.0005 ? qsTr("under linjen") : qsTr("i nivå"))
+                        if (settings.cutFill)
+                            return cut ? qsTr("ta bort material") : (fill ? qsTr("fyll på") : qsTr("i nivå"))
+                        return cut ? qsTr("över linjen") : (fill ? qsTr("under linjen") : qsTr("i nivå"))
                     }
                 }
             }
@@ -432,6 +545,9 @@ Item {
                     const gz = plugin.position ? plugin.position.z : NaN
                     if (isFinite(gz) || isFinite(r.z))
                         lines.push(qsTr("Höjd: GNSS ") + Geo.fmt(gz, 3) + qsTr(" m, linje ") + Geo.fmt(r.z, 3) + " m")
+                    const ah = plugin.antennaHeightApplied()
+                    if (ah !== 0 || settings.heightOffset !== 0)
+                        lines.push(qsTr("antenn ") + Geo.fmt(ah, 3) + qsTr(" m (QField), offset ") + Geo.fmt(settings.heightOffset, 3) + " m")
                     return lines.join("\n")
                 }
             }

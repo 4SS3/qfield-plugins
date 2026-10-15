@@ -14,7 +14,9 @@ function parseNested(s) {
         while (i < s.length) {
             var c = s[i]
             if (c === '(') {
-                items.push(group())
+                var g = group()
+                if (buf.trim()) g.tag = buf.trim()   // t.ex. "CircularString" inuti CompoundCurve
+                items.push(g)
                 buf = ''
                 continue
             }
@@ -50,9 +52,91 @@ function toCoords(strings, dim) {
     return out
 }
 
-// Returnerar { kind: 'line'|'polygon', paths: [{coords, closed, poly, hole}] } eller null
-function parseWkt(wkt) {
+// Punkter längs cirkelbågen p0 -> p1 -> p2 (utan p0, med exakt p2 sist).
+// `tol` = största tillåtna avvikelse (kartenheter) mellan båge och rak sekant.
+function arcPoints(p0, p1, p2, tol) {
+    var bx = p1.x - p0.x, by = p1.y - p0.y
+    var cx = p2.x - p0.x, cy = p2.y - p0.y
+    var scale = Math.max(Math.abs(bx), Math.abs(by), Math.abs(cx), Math.abs(cy))
+    if (scale === 0) return [p2]
+    var ux, uy, sweep
+    var closed = Math.abs(cx) < 1e-12 * scale && Math.abs(cy) < 1e-12 * scale
+    if (closed) {
+        // hel cirkel: p0 == p2, medelpunkt mitt emellan p0 och p1
+        ux = bx / 2; uy = by / 2
+        sweep = 2 * Math.PI
+    } else {
+        var d = 2 * (bx * cy - by * cx)
+        if (Math.abs(d) < 1e-9 * scale * scale) return [p1, p2]   // kollinjära => rak
+        var b2 = bx * bx + by * by, c2 = cx * cx + cy * cy
+        ux = (cy * b2 - by * c2) / d
+        uy = (bx * c2 - cx * b2) / d
+        var a0 = Math.atan2(-uy, -ux), a2 = Math.atan2(cy - uy, cx - ux)
+        var TWO = 2 * Math.PI
+        if (d > 0) {   // moturs
+            sweep = ((a2 - a0) % TWO + TWO) % TWO
+        } else {
+            sweep = -(((a0 - a2) % TWO + TWO) % TWO)
+        }
+    }
+    var r = Math.hypot(ux, uy)
+    var step = tol > 0 && r > tol ? 2 * Math.acos(1 - tol / r) : Math.PI / 2
+    var n = Math.max(1, Math.min(2000, Math.ceil(Math.abs(sweep) / step)))
+    var start = Math.atan2(-uy, -ux)
+    var out = []
+    for (var k = 1; k <= n; k++) {
+        if (k === n) { out.push({ x: p2.x, y: p2.y, z: p2.z }); break }
+        var f = k / n, ang = start + sweep * f
+        out.push({
+            x: p0.x + ux + r * Math.cos(ang),
+            y: p0.y + uy + r * Math.sin(ang),
+            z: (isFinite(p0.z) && isFinite(p2.z)) ? p0.z + f * (p2.z - p0.z) : NaN
+        })
+    }
+    return out
+}
+
+function arcsToCoords(c, tol) {
+    if (c.length < 3) return c
+    var out = [c[0]]
+    for (var i = 0; i + 2 < c.length; i += 2)
+        out = out.concat(arcPoints(c[i], c[i + 1], c[i + 2], tol))
+    return out
+}
+
+function tagInfo(node, outerDim) {
+    if (!node.tag) return { name: '', dim: outerDim }
+    var t = node.tag.toUpperCase().replace(/\s+/g, '')
+    var m = /(ZM|Z|M)$/.exec(t)
+    return { name: m ? t.slice(0, t.length - m[1].length) : t, dim: m ? m[1] : outerDim }
+}
+
+// Lista av barn (CompoundCurve) -> sammanhängande koordinatlista
+function compoundToCoords(children, dim, tol) {
+    var out = []
+    for (var i = 0; i < children.length; i++) {
+        if (!Array.isArray(children[i])) continue
+        var c = nodeToCoords(children[i], dim, tol)
+        if (out.length && c.length && Math.hypot(out[out.length - 1].x - c[0].x, out[out.length - 1].y - c[0].y) < 1e-9)
+            c = c.slice(1)
+        out = out.concat(c)
+    }
+    return out
+}
+
+// Ett (ev. taggat) kurvelement -> koordinater
+function nodeToCoords(node, outerDim, tol) {
+    var t = tagInfo(node, outerDim)
+    if (t.name === 'COMPOUNDCURVE') return compoundToCoords(node, t.dim, tol)
+    if (t.name === 'CIRCULARSTRING') return arcsToCoords(toCoords(node, t.dim), tol)
+    return toCoords(node, t.dim)   // LineString eller otaggad rak sträcka
+}
+
+// Returnerar { kind: 'line'|'polygon', paths: [{coords, closed, poly, hole}] } eller null.
+// opts.tolerance: största avvikelse (kartenheter) när cirkelbågar delas i raka segment.
+function parseWkt(wkt, opts) {
     if (!wkt) return null
+    var tol = opts && opts.tolerance > 0 ? opts.tolerance : 0.01
     var m = /^\s*([A-Za-z]+)\s*(ZM|Z|M)?\s*\(/i.exec(wkt)
     if (!m) return null
     var name = m[1].toUpperCase()
@@ -65,31 +149,40 @@ function parseWkt(wkt) {
     var tree = parseNested(wkt)
     if (!tree) return null
     var paths = []
-    if (name === 'LINESTRING') {
-        paths.push({ coords: toCoords(tree, dim), closed: false, poly: -1, hole: false })
+    var a, c
+
+    switch (name) {
+    case 'LINESTRING':
+    case 'CIRCULARSTRING':
+    case 'COMPOUNDCURVE':
+        c = name === 'LINESTRING' ? toCoords(tree, dim)
+          : name === 'CIRCULARSTRING' ? arcsToCoords(toCoords(tree, dim), tol)
+          : compoundToCoords(tree, dim, tol)
+        paths.push({ coords: c, closed: false, poly: -1, hole: false })
         return finish('line', paths)
-    }
-    if (name === 'MULTILINESTRING') {
-        for (var a = 0; a < tree.length; a++)
-            if (Array.isArray(tree[a])) paths.push({ coords: toCoords(tree[a], dim), closed: false, poly: -1, hole: false })
+    case 'MULTILINESTRING':
+    case 'MULTICURVE':
+        for (a = 0; a < tree.length; a++)
+            if (Array.isArray(tree[a]))
+                paths.push({ coords: nodeToCoords(tree[a], dim, tol), closed: false, poly: -1, hole: false })
         return finish('line', paths)
-    }
-    if (name === 'POLYGON') {
-        addPolygon(paths, tree, 0, dim)
+    case 'POLYGON':
+    case 'CURVEPOLYGON':
+        addPolygon(paths, tree, 0, dim, tol)
         return finish('polygon', paths)
-    }
-    if (name === 'MULTIPOLYGON') {
-        for (var p = 0; p < tree.length; p++)
-            if (Array.isArray(tree[p])) addPolygon(paths, tree[p], p, dim)
+    case 'MULTIPOLYGON':
+    case 'MULTISURFACE':
+        for (a = 0; a < tree.length; a++)
+            if (Array.isArray(tree[a])) addPolygon(paths, tree[a], a, tagInfo(tree[a], dim).dim, tol)
         return finish('polygon', paths)
     }
     return null
 }
 
-function addPolygon(paths, rings, polyIndex, dim) {
+function addPolygon(paths, rings, polyIndex, dim, tol) {
     for (var r = 0; r < rings.length; r++) {
         if (!Array.isArray(rings[r])) continue
-        paths.push({ coords: toCoords(rings[r], dim), closed: true, poly: polyIndex, hole: r > 0 })
+        paths.push({ coords: nodeToCoords(rings[r], dim, tol), closed: true, poly: polyIndex, hole: r > 0 })
     }
 }
 

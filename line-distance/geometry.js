@@ -132,7 +132,8 @@ function nodeToCoords(node, outerDim, tol) {
     return toCoords(node, t.dim)   // LineString eller otaggad rak sträcka
 }
 
-// Returnerar { kind: 'line'|'polygon', paths: [{coords, closed, poly, hole}] } eller null.
+// Returnerar { kind: 'line'|'polygon', paths: [{coords, closed, poly, hole}] } eller
+// { kind: 'point', points: [{x, y, z}] } eller null.
 // opts.tolerance: största avvikelse (kartenheter) när cirkelbågar delas i raka segment.
 function parseWkt(wkt, opts) {
     if (!wkt) return null
@@ -152,6 +153,13 @@ function parseWkt(wkt, opts) {
     var a, c
 
     switch (name) {
+    case 'POINT':
+    case 'MULTIPOINT':
+        // POINT Z (x y z), MULTIPOINT ((x y), (x y)) eller MULTIPOINT (x y, x y)
+        var pts = []
+        for (a = 0; a < tree.length; a++)
+            pts = pts.concat(Array.isArray(tree[a]) ? toCoords(tree[a], dim) : toCoords([tree[a]], dim))
+        return pts.length ? { kind: 'point', points: pts } : null
     case 'LINESTRING':
     case 'CIRCULARSTRING':
     case 'COMPOUNDCURVE':
@@ -200,19 +208,92 @@ function pointInRing(x, y, X, Y) {
     return inside
 }
 
-// p = {x, y, z}. opts = {reverse, geographic}
+// Omräkning från kartenheter till meter runt punkten p. Projicerade koordinater
+// används som de är; grader omvandlas med en lokal ekvirektangulär approximation.
+function scaleFactors(p, geographic) {
+    if (geographic)
+        return { kx: 111320 * Math.cos(p.y * Math.PI / 180), ky: 110574 }
+    return { kx: 1, ky: 1 }
+}
+
+// Hur långt punkten p ligger åt öster (e) och norr (n) om q, i meter.
+function localOffset(p, q, geographic) {
+    var sf = scaleFactors(q, geographic)
+    return { e: (p.x - q.x) * sf.kx, n: (p.y - q.y) * sf.ky }
+}
+
+// Avstånd, riktning och höjdskillnad från positionen p till en målpunkt.
+// target = {x, y, z}, p = {x, y, z}, opts = {geographic}.
+// dE/dN: hur långt målet ligger åt öster/norr om p (positivt = gå åt öster/norr).
+// dz = p.z - target.z, alltså samma tecken som för linjer (positivt = kap).
+function analyzePoint(target, p, opts) {
+    opts = opts || {}
+    if (!target || !p) return null
+    var sf = scaleFactors(p, opts.geographic)
+    var dx = (target.x - p.x) * sf.kx
+    var dy = (target.y - p.y) * sf.ky
+    var dist = Math.hypot(dx, dy)
+    var zt = target.z
+    return {
+        kind: 'point', dist: dist, offset: dist, dE: dx, dN: dy,
+        bearing: (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360,
+        z: isFinite(zt) ? zt : NaN,
+        dz: isFinite(p.z) && isFinite(zt) ? p.z - zt : NaN,
+        foot: { x: target.x, y: target.y },
+        inside: false
+    }
+}
+
+// p = {x, y, z}.
+// opts.reverse:    analysera linjen i omvänd riktning (B -> A)
+// opts.geographic: koordinaterna är grader; avstånd räknas om till meter
+// opts.chosen:     {pathIndex, segIndex} – redovisa det segmentet (förlängt åt båda håll)
+//                  i stället för det närmaste
+// opts.collect:    {maxDist, out, cap} – samla information för alla segment med
+//                  avstånd <= maxDist (max cap stycken) i out
 // Positivt `offset` = punkten ligger till HÖGER om linjens färdriktning (A -> B).
 // För polygoner är `offset` positiv utanför och negativ innanför.
 function analyze(geom, p, opts) {
     opts = opts || {}
     if (!geom || !p) return null
-    var kx = 1, ky = 1
-    if (opts.geographic) {
-        kx = 111320 * Math.cos(p.y * Math.PI / 180)
-        ky = 110574
-    }
+    var sf = scaleFactors(p, opts.geographic)
+    var kx = sf.kx, ky = sf.ky
     var best = null
+    var chosen = null
     var local = []   // lokala koordinater per path (för inside-test)
+
+    var collect = opts.collect || null
+    if (collect && !collect.out) collect.out = []
+
+    function buildInfo(pi, s, X, Y, Z, cum, total, t, dist, dx, dy, fx, fy, segLen, ext) {
+        var cross = dx * (-Y[s]) - dy * (-X[s])   // >0: punkten är vänster om riktningen
+        var zLo = Z[s], zHi = Z[s + 1]
+        if (ext === 'start') zHi = zLo  // förlängningen ärver ändpunktens höjd
+        else if (ext === 'end') zLo = zHi
+        var interpZ = zLo + t * (zHi - zLo)
+        return {
+            pathIndex: pi, segIndex: s, t: t, dist: dist,
+            offset: dist === 0 ? 0 : (cross > 0 ? -dist : dist),
+            segLength: segLen,
+            segFromStart: t * segLen,
+            segToEnd: (1 - t) * segLen,
+            fromStart: cum[s] + t * segLen,
+            length: total,
+            toEnd: total - (cum[s] + t * segLen),
+            ext: ext ? ext : null,                       // 'start' | 'end' | null
+            extDist: ext ? (ext === 'start' ? -(cum[s] + t * segLen)
+                                            : (cum[s] + t * segLen) - total) : 0,
+            z: isFinite(interpZ) ? interpZ : NaN,
+            dz: isFinite(p.z) && isFinite(interpZ) ? p.z - interpZ : NaN,
+            bearing: (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360,
+            foot: { x: p.x + fx / kx, y: p.y + fy / ky },
+            // aktivt segments ändpunkter i globala koordinater (för utkastning)
+            segStart: { x: p.x + X[s] / kx, y: p.y + Y[s] / ky },
+            segEnd: { x: p.x + X[s + 1] / kx, y: p.y + Y[s + 1] / ky },
+            beforeStart: ext === 'start',
+            afterEnd: ext === 'end'
+        }
+    }
 
     for (var pi = 0; pi < geom.paths.length; pi++) {
         var path = geom.paths[pi]
@@ -234,37 +315,38 @@ function analyze(geom, p, opts) {
             var len2 = dx * dx + dy * dy
             if (len2 === 0) continue
             // punkten är origo => vektor a->p = (-ax, -ay)
-            var t = (-ax * dx + -ay * dy) / len2
+            var t0 = (-ax * dx + -ay * dy) / len2
+            // förlängning förbi start/slut (ej för slutna ringar)
+            // Ett låst (valt) segment förlängs åt båda håll, även mitt på linjen
+            // och i polygoner, så att det beter sig som en linje med ett segment.
+            var isChosen = !!(opts.chosen && opts.chosen.pathIndex === pi && opts.chosen.segIndex === s)
+            var ext = null
+            if (isChosen) {
+                if (t0 < 0) ext = 'start'
+                else if (t0 > 1) ext = 'end'
+            } else if (!path.closed) {
+                if (s === 0 && t0 < 0) ext = 'start'
+                else if (s === c.length - 2 && t0 > 1) ext = 'end'
+            }
+            var t = t0
             if (t < 0) t = 0
             if (t > 1) t = 1
+            if (ext) t = t0
             var fx = ax + t * dx, fy = ay + t * dy
             var dist = Math.hypot(fx, fy)
-            if (best === null || dist < best.dist) {
-                var cross = dx * (-ay) - dy * (-ax)   // >0: punkten är vänster om riktningen
-                var segLen = Math.sqrt(len2)
-                var z = (isFinite(Z[s]) && isFinite(Z[s + 1])) ? Z[s] + t * (Z[s + 1] - Z[s]) : NaN
-                best = {
-                    pathIndex: pi, segIndex: s, t: t, dist: dist,
-                    offset: dist === 0 ? 0 : (cross > 0 ? -dist : dist),
-                    segLength: segLen,
-                    segFromStart: t * segLen,
-                    segToEnd: (1 - t) * segLen,
-                    fromStart: cum[s] + t * segLen,
-                    length: total,
-                    toEnd: total - (cum[s] + t * segLen),
-                    z: z,
-                    dz: (isFinite(p.z) && isFinite(z)) ? p.z - z : NaN,
-                    bearing: (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360,
-                    foot: { x: p.x + fx / kx, y: p.y + fy / ky },
-                    beforeStart: !path.closed && s === 0 && t === 0,
-                    afterEnd: !path.closed && s === c.length - 2 && t === 1
-                }
-            }
+            var info = buildInfo(pi, s, X, Y, Z, cum, total, t, dist, dx, dy, fx, fy, Math.sqrt(len2), ext)
+            if (best === null || dist < best.dist)
+                best = info
+            if (isChosen)
+                chosen = info
+            if (collect && dist <= collect.maxDist && collect.out.length < collect.cap)
+                collect.out.push(info)
         }
     }
-    if (best === null) return null
-    best.kind = geom.kind
-    best.inside = false
+    var res = chosen || best
+    if (res === null) return null
+    res.kind = geom.kind
+    res.inside = false
     if (geom.kind === 'polygon') {
         var inPoly = {}
         for (var i = 0; i < geom.paths.length; i++) {
@@ -274,10 +356,10 @@ function analyze(geom, p, opts) {
             if (gp.hole) inPoly[gp.poly] = false
             else if (inPoly[gp.poly] !== false) inPoly[gp.poly] = true
         }
-        for (var key in inPoly) if (inPoly[key]) best.inside = true
-        best.offset = best.inside ? -best.dist : best.dist
+        for (var key in inPoly) if (inPoly[key]) res.inside = true
+        res.offset = res.inside ? -res.dist : res.dist
     }
-    return best
+    return res
 }
 
 function fmt(v, decimals) {

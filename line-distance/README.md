@@ -1,40 +1,63 @@
-# Linjeavstånd – QField-plugin
+# Line distance (QField plugin)
 
-Visar live (från GNSS) avståndet till en vald linje eller polygon, ungefär som
-linjeutsättning i Emlid Flow och SurPad:
+Live distance from your GNSS position to a line, polygon or point, updated as you move.
+Built for staking out and checking positions against a line: how far you are from it,
+which side, where along it, and how far above or below its height.
 
-| Ruta | Betydelse |
-|---|---|
-| **Från A / Till B** | avstånd längs linjen från start (A) till närmaste punkt, och därifrån till slutet (B) |
-| **Segment** | avstånd från närmaste punkt till start/slut på det närmaste segmentet, samt segmentnummer |
-| **Offset** | vinkelrätt avstånd till linjen, med sida (höger/vänster om A→B) |
-| **Höjd** | GNSS-höjd minus linjens (interpolerade) Z – över/under; kräver Z-linje. Båda höjderna visas som siffror under |
-| Polygon | avstånd till närmaste kant + innanför/utanför |
+*På svenska: live-avstånd från GNSS-positionen till en linje, polygon eller punkt, med
+offset åt höger/vänster, avstånd längs linjen till A och B, kap/fyll mot linjens höjd,
+GNSS-kvalitet och en precisionsvy för utsättning. Språk: engelska och svenska.*
 
-En streckad röd linje ritas i kartan från din position till närmaste punkt på linjen.
+## What it shows
 
-## Användning
-1. Installera zip-filen via QFields plugin-hanterare (*Installera plugin från URL/fil*) och aktivera den.
-2. Tryck på plugin-knappen i verktygsfältet → panelen öppnas.
-3. **⌖ Välj**, peka sedan på en linje/polygon i kartan (närmaste inom ~30 px, alla vektorlager).
-4. **⇅ Vänd** byter A/B. **Rensa** tar bort valet.
+**Lines and polygons**
+- Perpendicular offset, with direction (right / left) or inside / outside for polygons.
+- Distance along the line from A and to B. Values go negative, in red, when you are
+  beyond the end of the line.
+- Cut/Fill against the line's height (only when the line has Z values).
+- The nearest segment is picked automatically as you move along the line. Tap the active
+  line again to lock the segment you tap: the reference is then that segment, extended
+  past both ends, like a single-segment line.
+- Reverse the direction (A ↔ B) from the menu. Curved geometries are supported.
 
-## Inställningar (⚙)
-- **Höjdoffset** läggs till GNSS-höjden, t.ex. för att gå från ellipsoid- till RH2000-höjd.
-- **Cut/Fill** visar höjden som *Cut* (GNSS över linjen – ta bort material) eller *Fill* (under – fyll på) i stället för över/under.
-- **Antennhöjd** ställs in i QFields egna positioneringsinställningar och dras redan av från höjden där.
-  Pluginet gör ingen egen avdragning (skulle ge dubbel korrigering) men visar värdet.
+**Points and vertices**
+- Tap a point feature, or use *Pick vertex* in the menu to target a vertex of any line,
+  polygon or point layer.
+- Shows distance, compass direction, east/north offsets and Cut/Fill.
 
-## Geometri
-- Raka linjer och polygoner, samt kurvor (CircularString, CompoundCurve, CurvePolygon, MultiCurve, MultiSurface).
-  Cirkelbågar delas upp i raka segment med högst 1 cm avvikelse.
-- Bara **synliga** lager går att välja.
+**Precise view**
+- A zooming dial for the last metres. Point targets: north up, target in the centre.
+  Lines: cross-track view with the line running through the centre and ticks that scroll
+  as you walk. The dot shows your position with a halo for the GNSS accuracy, and the
+  view turns green when you are within the arrival tolerance.
+- Settings: automatic (within a set distance), always, or off.
 
-## Begränsningar
-- Avstånd i projektets enhet (meter för projicerade CRS); för geografiska CRS räknas grader om lokalt.
-- Klotoider/övergångskurvor finns inte i QGIS – planerat som eget steg (se nedan).
+**Other**
+- GNSS fix type and horizontal / vertical accuracy, and a clear marker when a height offset
+  is active.
+- Separate dashboard layouts for portrait and landscape.
+- The plugin button can be moved (Settings → *Move button*); a long press while moving puts
+  it back in the toolbar.
+- Languages: English and Swedish (falls back to English).
 
-## Utveckling
-- `geometry.js` är ren JS utan QField-beroenden: `node tests/test_geometry.js`.
-- Bygg zip: `python3 build.py` → `dist/line-distance-v<version>.zip`.
-- Nästa steg i rq.md: utsättning av väglinjer (klotoider/övergångskurvor) – ny datakälla som genereras till tät polylinje och matas in i samma `analyze()`.
+## Using it
+
+1. Tap the plugin button, then tap a line, polygon or point on the map.
+2. Tap the button again to close the dashboard. Long-press it for the menu
+   (pick, pick vertex, reverse, automatic segment, clear selection, settings).
+
+Cut/Fill follows the usual convention: your GNSS height minus the target height.
+Above the target is **Cut** (remove material), below is **Fill**.
+
+## Installing
+
+Plugin manager → *Install plugin from URL* → paste the download link of the zip in
+`dist/` (or choose the zip locally), then enable the plugin.
+
+## Notes
+
+- Distances use the project CRS units (metres for geographic CRS); labels currently say
+  `m`.
+- Heights use QField's projected GNSS height, so geoid and antenna height are handled by
+  QField. A height offset can be added in the settings.
+- `geometry.js` is a plain module without QField dependencies and can be tested with node.

@@ -1,6 +1,6 @@
 [general]
-name=Linjeavstånd
-description=Visar vinkelrätt avstånd (offset), avstånd längs linjen till start/slut och höjdskillnad till vald linje eller polygon – som linjeutsättning i Emlid Flow/SurPad.
+name=Line distance
+description=Live distance to a line, polygon or point: offset, distance along the line to A and B, cut/fill height difference, GNSS fix quality and a precise stake-out view.
 author=Joakim
 icon=icon.svg
-version=0.3.0
+version=0.4.96
